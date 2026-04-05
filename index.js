@@ -379,7 +379,7 @@ async function setupReviewsChannel() {
         .addFields(
             { 
                 name: '📋 Como funciona', 
-                value: '```\n1️⃣ Clique no botão "Avaliar equipe"\n2️⃣ Selecione o membro que deseja avaliar\n3️⃣ Escolha uma nota de 0 a 10\n4️⃣ Escreva seu feedback (opcional)\n5️⃣ Envie sua avaliação\n```', 
+                value: '```\n• Clique no botão "Avaliar equipe"\n• Selecione o membro que deseja avaliar\n• Escolha uma nota de 0 a 10\n• Escreva seu feedback (opcional)\n5️⃣ Envie sua avaliação\n```', 
                 inline: false 
             },
             { 
@@ -399,11 +399,11 @@ async function setupReviewsChannel() {
             },
             { 
                 name: '📈 Estatísticas', 
-                value: `📝 Total de avaliações: ${loadReviews().length}\n🏆 Ranking semanal: Ativo`, 
+                value: `🏆 Ranking semanal: Ativo`, 
                 inline: false 
             }
         )
-        .setFooter({ text: `Sistema de Avaliação • ${guild.name}`, iconURL: guild.iconURL() })
+        .setFooter({ text: `Sistema de Avaliação` })
         .setTimestamp();
     
     const button = new ButtonBuilder()
