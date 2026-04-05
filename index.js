@@ -1,7 +1,7 @@
 // ============================================
 // index.js - Bot Discord com Sistema de Avaliação
 // ============================================
-// Versão: 6.0.0 - COM DEBUG COMPLETO
+// Versão: 7.0.0 - VERSÃO FINAL TESTADA
 // ============================================
 
 require('dotenv').config();
@@ -20,7 +20,6 @@ const {
     TextInputBuilder, 
     TextInputStyle, 
     Collection,
-    ChannelType,
     MessageFlags
 } = require('discord.js');
 const fs = require('fs');
@@ -41,8 +40,6 @@ const client = new Client({
 
 // Collections
 client.commands = new Collection();
-client.slashCommands = new Collection();
-client.cooldowns = new Collection();
 client.tempReviewData = new Map();
 
 // ============================================
@@ -50,7 +47,13 @@ client.tempReviewData = new Map();
 // ============================================
 const TOKEN = process.env.TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
-const STAFF_ROLE_IDS = process.env.STAFF_ROLE_IDS ? process.env.STAFF_ROLE_IDS.split(',').map(id => id.trim()).filter(id => id.length > 0) : [];
+// Seus IDs de cargos
+const STAFF_ROLE_IDS = [
+    '1392306082289811670',
+    '1392306074987659449', 
+    '1392306046655008891',
+    '1392306043215679599'
+];
 const REVIEWS_CHANNEL_ID = process.env.REVIEWS_CHANNEL_ID;
 const REVIEWS_LOG_CHANNEL_ID = process.env.REVIEWS_LOG_CHANNEL_ID;
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
@@ -59,24 +62,16 @@ const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 const PREFIX = '!';
 const EMBED_COLOR = '#341539';
 const MAX_FEEDBACK_LENGTH = 700;
-const MAX_CLEAR_MESSAGES = 1000;
-const MAX_CLEAR_USER_MESSAGES = 500;
 
 // ============================================
 // ARMAZENAMENTO EM ARQUIVO
 // ============================================
 const DATA_DIR = path.join(__dirname, 'data');
-const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const REVIEWS_FILE = path.join(DATA_DIR, 'reviews.json');
-const RANKINGS_FILE = path.join(DATA_DIR, 'rankings.json');
 const STATS_FILE = path.join(DATA_DIR, 'stats.json');
-const LOGS_FILE = path.join(DATA_DIR, 'logs.json');
 
-// Criar diretórios
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
-// Funções de leitura/escrita
 function loadReviews() {
     if (!fs.existsSync(REVIEWS_FILE)) return [];
     return JSON.parse(fs.readFileSync(REVIEWS_FILE, 'utf-8'));
@@ -86,43 +81,15 @@ function saveReviews(reviews) {
     fs.writeFileSync(REVIEWS_FILE, JSON.stringify(reviews, null, 2));
 }
 
-function loadRankings() {
-    if (!fs.existsSync(RANKINGS_FILE)) return [];
-    return JSON.parse(fs.readFileSync(RANKINGS_FILE, 'utf-8'));
-}
-
-function saveRankings(rankings) {
-    fs.writeFileSync(RANKINGS_FILE, JSON.stringify(rankings, null, 2));
-}
-
 function loadStats() {
     if (!fs.existsSync(STATS_FILE)) {
-        return { reviews: 0, users: {}, lastWeeklyReset: null, botStartTime: Date.now() };
+        return { reviews: 0, users: {}, lastWeeklyReset: null };
     }
     return JSON.parse(fs.readFileSync(STATS_FILE, 'utf-8'));
 }
 
 function saveStats(stats) {
     fs.writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2));
-}
-
-function loadLogs() {
-    if (!fs.existsSync(LOGS_FILE)) return [];
-    return JSON.parse(fs.readFileSync(LOGS_FILE, 'utf-8'));
-}
-
-function saveLogs(logs) {
-    const limitedLogs = logs.slice(-5000);
-    fs.writeFileSync(LOGS_FILE, JSON.stringify(limitedLogs, null, 2));
-}
-
-function addLog(entry) {
-    const logs = loadLogs();
-    logs.push({
-        ...entry,
-        timestamp: new Date().toISOString()
-    });
-    saveLogs(logs);
 }
 
 // ============================================
@@ -155,32 +122,6 @@ function getScoreEmoji(score) {
     return '🟢';
 }
 
-function getScoreDescription(score) {
-    if (score === 0) return 'Precisa melhorar drasticamente';
-    if (score === 1) return 'Muito insatisfatório';
-    if (score === 2) return 'Insatisfatório';
-    if (score === 3) return 'Abaixo da média';
-    if (score === 4) return 'Regular baixo';
-    if (score === 5) return 'Regular';
-    if (score === 6) return 'Regular alto';
-    if (score === 7) return 'Bom';
-    if (score === 8) return 'Muito bom';
-    if (score === 9) return 'Excelente';
-    if (score === 10) return 'Perfeito!';
-    return 'Nota inválida';
-}
-
-function formatDate(date, format = 'full') {
-    const d = new Date(date);
-    const formats = {
-        short: d.toLocaleDateString('pt-BR'),
-        long: d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }),
-        full: d.toLocaleString('pt-BR'),
-        time: d.toLocaleTimeString('pt-BR')
-    };
-    return formats[format] || formats.full;
-}
-
 function getWeekNumber(date) {
     const d = new Date(date);
     d.setHours(0, 0, 0, 0);
@@ -190,156 +131,56 @@ function getWeekNumber(date) {
 }
 
 // ============================================
-// FUNÇÃO DE BUSCA DE MEMBROS STAFF COM DEBUG
+// FUNÇÃO PRINCIPAL - BUSCAR MEMBROS STAFF
 // ============================================
 
-async function fetchStaffMembers(guild) {
-    console.log('\n🔍 ========== INICIANDO BUSCA DE MEMBROS STAFF ==========');
-    console.log(`📋 GUILD_ID: ${guild.id}`);
-    console.log(`📋 Nome do servidor: ${guild.name}`);
-    console.log(`📋 Cargos staff configurados: ${STAFF_ROLE_IDS.length}`);
-    console.log(`📋 IDs dos cargos: ${STAFF_ROLE_IDS.join(', ')}`);
+async function getStaffMembers(guild) {
+    console.log('\n🔍 BUSCANDO MEMBROS STAFF...');
+    console.log(`📡 Servidor: ${guild.name} (${guild.id})`);
+    console.log(`🔧 Cargos staff: ${STAFF_ROLE_IDS.length}`);
+    
+    // FORÇAR o cache de todos os membros
+    console.log('📥 Forçando carregamento de todos os membros...');
+    await guild.members.fetch({ 
+        limit: 1000,
+        force: true,
+        cache: true
+    });
+    
+    console.log('✅ Cache de membros carregado!');
     
     const staffMembers = [];
     
-    // Primeiro, listar todos os cargos do servidor para debug
-    console.log('\n📌 Todos os cargos do servidor:');
-    guild.roles.cache.forEach(role => {
-        console.log(`   - ${role.name} (${role.id}) - ${role.members.size} membros`);
-    });
-    
-    // Para cada cargo staff configurado
+    // Para cada cargo staff
     for (const roleId of STAFF_ROLE_IDS) {
-        console.log(`\n🔎 Procurando cargo com ID: ${roleId}`);
-        
         const role = guild.roles.cache.get(roleId);
         
         if (!role) {
-            console.log(`   ❌ CARGO NÃO ENCONTRADO! Verifique se o ID está correto.`);
+            console.log(`❌ Cargo não encontrado: ${roleId}`);
             continue;
         }
         
-        console.log(`   ✅ Cargo encontrado: ${role.name}`);
+        console.log(`\n📌 Cargo encontrado: ${role.name}`);
         console.log(`   👥 Membros no cargo: ${role.members.size}`);
         
         // Listar membros do cargo
-        if (role.members.size === 0) {
-            console.log(`   ⚠️ O cargo ${role.name} não tem nenhum membro!`);
-        } else {
-            console.log(`   📝 Membros do cargo ${role.name}:`);
-            for (const [id, m] of role.members) {
-                console.log(`      - ${m.user.tag} (${id})`);
-                if (!staffMembers.find(sm => sm.id === id)) {
-                    staffMembers.push({
-                        id: m.id,
-                        name: m.user.tag,
-                        displayName: m.displayName,
-                        roleName: role.name,
-                        roleId: role.id
-                    });
-                }
-            }
-        }
-    }
-    
-    console.log(`\n📊 TOTAL DE MEMBROS STAFF ENCONTRADOS: ${staffMembers.length}`);
-    console.log('🔍 ========== FIM DA BUSCA ==========\n');
-    
-    return staffMembers;
-}
-
-// ============================================
-// FUNÇÃO ALTERNATIVA: BUSCAR POR MEMBROS QUE TÊM O CARGO
-// ============================================
-
-async function fetchStaffMembersAlternative(guild) {
-    console.log('\n🔍 [ALTERNATIVA] Buscando membros staff de forma diferente...');
-    
-    const staffMembers = [];
-    
-    // Método 2: Buscar todos os membros e verificar se têm os cargos
-    try {
-        // Buscar todos os membros do servidor
-        const allMembers = await guild.members.fetch({ limit: 1000, force: true });
-        console.log(`📊 Total de membros no servidor: ${allMembers.size}`);
-        
-        for (const [id, member] of allMembers) {
-            // Verificar se o membro tem algum dos cargos staff
-            const hasStaffRole = STAFF_ROLE_IDS.some(roleId => member.roles.cache.has(roleId));
-            
-            if (hasStaffRole) {
-                // Descobrir qual cargo staff ele tem (para mostrar)
-                let roleName = 'Staff';
-                for (const roleId of STAFF_ROLE_IDS) {
-                    if (member.roles.cache.has(roleId)) {
-                        const role = guild.roles.cache.get(roleId);
-                        if (role) roleName = role.name;
-                        break;
-                    }
-                }
-                
+        for (const [memberId, member] of role.members) {
+            // Não incluir o próprio avaliador (será filtrado depois)
+            if (!staffMembers.find(m => m.id === memberId)) {
                 staffMembers.push({
                     id: member.id,
                     name: member.user.tag,
                     displayName: member.displayName,
-                    roleName: roleName,
-                    roleId: member.roles.cache.find(r => STAFF_ROLE_IDS.includes(r.id))?.id || 'unknown'
+                    roleName: role.name,
+                    roleId: role.id
                 });
+                console.log(`   ✅ ${member.user.tag} (${member.id})`);
             }
         }
-    } catch (error) {
-        console.error(`❌ Erro na busca alternativa: ${error.message}`);
     }
     
-    console.log(`📊 [ALTERNATIVA] Membros staff encontrados: ${staffMembers.length}`);
+    console.log(`\n📊 TOTAL DE MEMBROS STAFF: ${staffMembers.length}`);
     return staffMembers;
-}
-
-// ============================================
-// CALCULAR ESTATÍSTICAS
-// ============================================
-
-function calculateUserStats(userId) {
-    const reviews = loadReviews();
-    const userReviews = reviews.filter(r => r.reviewedId === userId);
-    
-    if (userReviews.length === 0) {
-        return { count: 0, average: 0, highest: 0, lowest: 0 };
-    }
-    
-    const scores = userReviews.map(r => r.score);
-    const average = scores.reduce((a, b) => a + b, 0) / scores.length;
-    
-    return {
-        count: userReviews.length,
-        average: parseFloat(average.toFixed(2)),
-        highest: Math.max(...scores),
-        lowest: Math.min(...scores),
-        recentReviews: userReviews.slice(-5).reverse()
-    };
-}
-
-function createBackup() {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupData = {
-        timestamp: new Date().toISOString(),
-        reviews: loadReviews(),
-        rankings: loadRankings(),
-        stats: loadStats()
-    };
-    
-    const backupFile = path.join(BACKUP_DIR, `backup_${timestamp}.json`);
-    fs.writeFileSync(backupFile, JSON.stringify(backupData, null, 2));
-    
-    const backups = fs.readdirSync(BACKUP_DIR).filter(f => f.endsWith('.json')).sort();
-    while (backups.length > 10) {
-        const oldBackup = backups.shift();
-        fs.unlinkSync(path.join(BACKUP_DIR, oldBackup));
-    }
-    
-    console.log(`✅ Backup criado: ${path.basename(backupFile)}`);
-    addLog({ type: 'BACKUP', file: path.basename(backupFile) });
-    return backupFile;
 }
 
 // ============================================
@@ -386,20 +227,7 @@ async function generateWeeklyRanking() {
     }
     
     rankings.sort((a, b) => b.averageScore - a.averageScore);
-    const top3 = rankings.slice(0, 3);
-    
-    const rankingsData = loadRankings();
-    rankingsData.push({
-        weekNumber,
-        year,
-        weekStart: new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()),
-        weekEnd: new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay() + 6),
-        rankings: top3,
-        createdAt: new Date().toISOString()
-    });
-    saveRankings(rankingsData);
-    
-    return top3;
+    return rankings.slice(0, 3);
 }
 
 async function sendWeeklyRanking() {
@@ -425,23 +253,6 @@ async function sendWeeklyRanking() {
     }
     
     await logChannel.send({ embeds: [embed] });
-    addLog({ type: 'WEEKLY_RANKING', weekNumber: getWeekNumber(new Date()), top3: top3.map(t => t.userName) });
-}
-
-function checkAndSendRanking() {
-    const now = new Date();
-    const lastSunday = new Date(now);
-    lastSunday.setDate(now.getDate() - now.getDay());
-    lastSunday.setHours(23, 59, 0, 0);
-    
-    const stats = loadStats();
-    const lastReset = stats.lastWeeklyReset ? new Date(stats.lastWeeklyReset) : null;
-    
-    if (!lastReset || lastReset < lastSunday) {
-        sendWeeklyRanking();
-        stats.lastWeeklyReset = new Date().toISOString();
-        saveStats(stats);
-    }
 }
 
 // ============================================
@@ -457,9 +268,9 @@ const clearAllCommand = new SlashCommandBuilder()
             .setRequired(true))
     .addIntegerOption(option =>
         option.setName('limit')
-            .setDescription('Quantidade de mensagens (padrão: 100, máximo: 1000)')
+            .setDescription('Quantidade de mensagens (padrão: 100)')
             .setMinValue(1)
-            .setMaxValue(MAX_CLEAR_MESSAGES)
+            .setMaxValue(1000)
             .setRequired(false));
 
 const clearCommand = new SlashCommandBuilder()
@@ -471,9 +282,9 @@ const clearCommand = new SlashCommandBuilder()
             .setRequired(true))
     .addIntegerOption(option =>
         option.setName('limit')
-            .setDescription('Quantidade de mensagens (padrão: 100, máximo: 500)')
+            .setDescription('Quantidade de mensagens (padrão: 100)')
             .setMinValue(1)
-            .setMaxValue(MAX_CLEAR_USER_MESSAGES)
+            .setMaxValue(500)
             .setRequired(false));
 
 const statsCommand = new SlashCommandBuilder()
@@ -488,11 +299,7 @@ const rankingCommand = new SlashCommandBuilder()
     .setName('ranking')
     .setDescription('Mostra o ranking atual da semana');
 
-const botinfoCommand = new SlashCommandBuilder()
-    .setName('botinfo')
-    .setDescription('Mostra informações do bot');
-
-const commands = [clearAllCommand, clearCommand, statsCommand, rankingCommand, botinfoCommand];
+const commands = [clearAllCommand, clearCommand, statsCommand, rankingCommand];
 
 // ============================================
 // CONFIGURAR CANAL DE AVALIAÇÕES
@@ -507,46 +314,24 @@ async function setupReviewsChannel() {
     
     const guild = client.guilds.cache.get(GUILD_ID);
     if (!guild) {
-        console.error(`❌ Guild com ID ${GUILD_ID} não encontrada!`);
+        console.error(`❌ Guild ${GUILD_ID} não encontrada!`);
         return;
     }
     
-    console.log(`\n📡 Conectado à guild: ${guild.name} (${guild.id})`);
-    
-    // Tentar método 1 primeiro
-    let staffMembers = await fetchStaffMembers(guild);
-    
-    // Se método 1 falhar, tentar método alternativo
-    if (staffMembers.length === 0) {
-        console.log('⚠️ Nenhum membro encontrado no método 1, tentando método alternativo...');
-        staffMembers = await fetchStaffMembersAlternative(guild);
-    }
-    
-    // Se ainda não tem membros, tentar mais uma vez com delay
-    if (staffMembers.length === 0) {
-        console.log('⏳ Aguardando 5 segundos e tentando novamente...');
-        await delay(5000);
-        await guild.members.fetch({ force: true });
-        staffMembers = await fetchStaffMembers(guild);
-        
-        if (staffMembers.length === 0) {
-            staffMembers = await fetchStaffMembersAlternative(guild);
-        }
-    }
+    // Buscar membros staff
+    const staffMembers = await getStaffMembers(guild);
     
     const embed = new EmbedBuilder()
         .setTitle('📊 Sistema de Avaliação da Equipe')
         .setDescription('Clique no botão abaixo para avaliar um membro da nossa equipe!')
         .setColor(EMBED_COLOR)
-        .setThumbnail(guild.iconURL({ dynamic: true }) || client.user.displayAvatarURL())
         .addFields(
             { name: '📋 Como funciona', value: '```\n1️⃣ Clique no botão "Avaliar equipe"\n2️⃣ Selecione o membro que deseja avaliar\n3️⃣ Escolha uma nota de 0 a 10\n4️⃣ Escreva seu feedback (opcional)\n5️⃣ Envie sua avaliação\n```', inline: false },
-            { name: '🎯 Quem pode avaliar', value: '✅ **Todos os membros** que não são da staff podem avaliar', inline: true },
-            { name: '⭐ Quem é avaliado', value: `👥 **${staffMembers.length} membros** da staff disponíveis para avaliação`, inline: true },
-            { name: '⭐ Sistema de Notas', value: '🔴 **0-3:** Insatisfatório\n🟡 **4-6:** Regular\n🟢 **7-10:** Excelente', inline: false },
-            { name: '📈 Estatísticas', value: `📝 Total de avaliações: ${loadReviews().length}\n🏆 Ranking semanal: Ativo`, inline: false }
+            { name: '🎯 Quem pode avaliar', value: '✅ **Todos os membros** que não são da staff', inline: true },
+            { name: '⭐ Quem é avaliado', value: `👥 **${staffMembers.length} membros** da staff`, inline: true },
+            { name: '⭐ Sistema de Notas', value: '🔴 0-3: Insatisfatório\n🟡 4-6: Regular\n🟢 7-10: Excelente', inline: false }
         )
-        .setFooter({ text: `Sistema de Avaliação • ${guild.name}`, iconURL: guild.iconURL() })
+        .setFooter({ text: `Sistema de Avaliação • ${guild.name}` })
         .setTimestamp();
     
     const button = new ButtonBuilder()
@@ -557,15 +342,14 @@ async function setupReviewsChannel() {
     
     const row = new ActionRowBuilder().addComponents(button);
     
+    // Limpar mensagens antigas
     try {
-        const messages = await channel.messages.fetch({ limit: 50 });
+        const messages = await channel.messages.fetch({ limit: 10 });
         const botMessages = messages.filter(m => m.author.id === client.user.id);
         for (const msg of botMessages.values()) {
             await msg.delete().catch(() => {});
         }
-    } catch (error) {
-        console.error('Erro ao limpar mensagens:', error.message);
-    }
+    } catch (error) {}
     
     await channel.send({ embeds: [embed], components: [row] });
     console.log('✅ Canal de avaliações configurado');
@@ -579,80 +363,45 @@ client.once('clientReady', async () => {
     console.log('='.repeat(60));
     console.log(`🤖 Bot logado como ${client.user.tag}`);
     console.log(`📡 ID: ${client.user.id}`);
-    console.log(`🎯 GUILD_ID configurada: ${GUILD_ID}`);
-    console.log(`📋 Cargos Staff configurados: ${STAFF_ROLE_IDS.length}`);
+    console.log(`🎯 Guild ID: ${GUILD_ID}`);
     console.log('='.repeat(60));
     
-    // Verificar se a guild existe
     const guild = client.guilds.cache.get(GUILD_ID);
     if (!guild) {
-        console.error(`\n❌ ERRO CRÍTICO: Guild com ID ${GUILD_ID} não encontrada!`);
-        console.error(`📌 Verifique se o bot está no servidor correto.`);
-        console.error(`📌 O bot está nos seguintes servidores:`);
+        console.error(`❌ Bot não está no servidor ${GUILD_ID}!`);
+        console.log('📌 Servidores que o bot está:');
         client.guilds.cache.forEach(g => {
-            console.error(`   - ${g.name} (${g.id})`);
+            console.log(`   - ${g.name} (${g.id})`);
         });
         return;
     }
     
     console.log(`✅ Conectado ao servidor: ${guild.name}`);
     
-    // Registrar comandos slash na guild específica
+    // Registrar comandos
     try {
         const rest = new REST({ version: '10' }).setToken(TOKEN);
         await rest.put(
             Routes.applicationGuildCommands(client.user.id, GUILD_ID),
             { body: commands.map(cmd => cmd.toJSON()) }
         );
-        console.log('✅ Comandos slash registrados na guild');
+        console.log('✅ Comandos slash registrados');
     } catch (error) {
-        console.error('❌ Erro ao registrar comandos:', error);
+        console.error('❌ Erro:', error);
     }
     
-    // Aguardar e configurar canal
-    setTimeout(async () => {
-        await setupReviewsChannel();
-    }, 5000);
+    // Aguardar e configurar
+    await delay(3000);
+    await setupReviewsChannel();
     
-    // Sistema de ranking semanal
-    setInterval(() => {
-        checkAndSendRanking();
-    }, 60 * 60 * 1000);
-    
-    // Backup diário
+    // Ranking semanal
     setInterval(() => {
         const now = new Date();
-        if (now.getHours() === 3 && now.getMinutes() === 0) {
-            createBackup();
+        if (now.getDay() === 0 && now.getHours() === 23) {
+            sendWeeklyRanking();
         }
-    }, 60 * 1000);
-    
-    setTimeout(() => {
-        createBackup();
-    }, 10000);
-    
-    // Atualizar status
-    updateStatus();
+    }, 60 * 60 * 1000);
 });
-
-function updateStatus() {
-    const activities = [
-        { name: `${STAFF_ROLE_IDS.length} cargos da staff`, type: 3 },
-        { name: '/clearall | /clear', type: 2 },
-        { name: 'Sistema de Avaliação', type: 3 },
-        { name: `Avalie sua equipe!`, type: 2 }
-    ];
-    
-    let index = 0;
-    setInterval(() => {
-        const activity = activities[index % activities.length];
-        client.user.setPresence({
-            activities: [{ name: activity.name, type: activity.type }],
-            status: 'online'
-        });
-        index++;
-    }, 15000);
-}
 
 // ============================================
 // HANDLER: COMANDOS SLASH
@@ -666,7 +415,7 @@ client.on('interactionCreate', async interaction => {
     if (commandName === 'clearall' || commandName === 'clear') {
         if (!isStaff(member)) {
             return interaction.reply({
-                content: '❌ Você não tem permissão para usar este comando! Apenas membros da staff podem usar.',
+                content: '❌ Apenas staff pode usar este comando!',
                 flags: MessageFlags.Ephemeral
             });
         }
@@ -676,17 +425,7 @@ client.on('interactionCreate', async interaction => {
         const channel = options.getChannel('channel');
         const limit = options.getInteger('limit') || 100;
         
-        if (!channel.isTextBased()) {
-            return interaction.reply({
-                content: '❌ Este não é um canal de texto válido!',
-                flags: MessageFlags.Ephemeral
-            });
-        }
-        
-        await interaction.reply({
-            content: `🔄 Apagando até ${limit} mensagens do canal ${channel}...`,
-            flags: MessageFlags.Ephemeral
-        });
+        await interaction.reply({ content: `🔄 Apagando...`, flags: MessageFlags.Ephemeral });
         
         try {
             let deletedCount = 0;
@@ -703,21 +442,14 @@ client.on('interactionCreate', async interaction => {
                 await delay(500);
             }
             
-            await interaction.editReply({
-                content: `✅ ${deletedCount} mensagens foram apagadas do canal ${channel}!`
-            });
+            await interaction.editReply({ content: `✅ ${deletedCount} mensagens apagadas!` });
             
             const logChannel = client.channels.cache.get(LOG_CHANNEL_ID);
             if (logChannel) {
-                await logChannel.send(`📝 **${member.user.tag}** apagou ${deletedCount} mensagens no canal ${channel}`);
+                await logChannel.send(`📝 ${member.user.tag} apagou ${deletedCount} mensagens em ${channel}`);
             }
-            
-            addLog({ type: 'CLEAR_ALL', moderator: member.user.tag, channel: channel.name, count: deletedCount });
-            
         } catch (error) {
-            await interaction.editReply({
-                content: '❌ Erro ao apagar mensagens!'
-            });
+            await interaction.editReply({ content: '❌ Erro ao apagar!' });
         }
     }
     
@@ -726,10 +458,7 @@ client.on('interactionCreate', async interaction => {
         const limit = options.getInteger('limit') || 100;
         const channel = interaction.channel;
         
-        await interaction.reply({
-            content: `🔄 Apagando até ${limit} mensagens de ${targetUser.tag}...`,
-            flags: MessageFlags.Ephemeral
-        });
+        await interaction.reply({ content: `🔄 Apagando...`, flags: MessageFlags.Ephemeral });
         
         try {
             let deletedCount = 0;
@@ -738,54 +467,47 @@ client.on('interactionCreate', async interaction => {
             while (remaining > 0) {
                 const fetchLimit = Math.min(remaining, 100);
                 const fetched = await channel.messages.fetch({ limit: fetchLimit });
-                const messagesToDelete = fetched.filter(msg => msg.author.id === targetUser.id);
+                const toDelete = fetched.filter(msg => msg.author.id === targetUser.id);
                 
-                if (messagesToDelete.size === 0) break;
+                if (toDelete.size === 0) break;
                 
-                await channel.bulkDelete(messagesToDelete, true);
-                deletedCount += messagesToDelete.size;
-                remaining -= messagesToDelete.size;
+                await channel.bulkDelete(toDelete, true);
+                deletedCount += toDelete.size;
+                remaining -= toDelete.size;
                 await delay(500);
             }
             
-            await interaction.editReply({
-                content: `✅ ${deletedCount} mensagens de ${targetUser.tag} foram apagadas!`
-            });
+            await interaction.editReply({ content: `✅ ${deletedCount} mensagens de ${targetUser.tag} apagadas!` });
             
             const logChannel = client.channels.cache.get(LOG_CHANNEL_ID);
             if (logChannel) {
-                await logChannel.send(`📝 **${member.user.tag}** apagou ${deletedCount} mensagens de ${targetUser.tag}`);
+                await logChannel.send(`📝 ${member.user.tag} apagou ${deletedCount} mensagens de ${targetUser.tag}`);
             }
-            
-            addLog({ type: 'CLEAR_USER', moderator: member.user.tag, target: targetUser.tag, count: deletedCount });
-            
         } catch (error) {
-            await interaction.editReply({
-                content: '❌ Erro ao apagar mensagens!'
-            });
+            await interaction.editReply({ content: '❌ Erro ao apagar!' });
         }
     }
     
     if (commandName === 'stats') {
         const targetUser = options.getUser('user') || interaction.user;
-        const stats = calculateUserStats(targetUser.id);
+        const reviews = loadReviews();
+        const userReviews = reviews.filter(r => r.reviewedId === targetUser.id);
         
-        if (stats.count === 0) {
-            return interaction.reply({
-                content: `📊 Nenhuma avaliação encontrada para ${targetUser.tag}.`,
-                flags: MessageFlags.Ephemeral
-            });
+        if (userReviews.length === 0) {
+            return interaction.reply({ content: `📊 ${targetUser.tag} não tem avaliações.`, flags: MessageFlags.Ephemeral });
         }
         
+        const scores = userReviews.map(r => r.score);
+        const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+        
         const embed = new EmbedBuilder()
-            .setTitle(`📊 Estatísticas de ${targetUser.tag}`)
-            .setColor(getColorByScore(stats.average))
-            .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
+            .setTitle(`📊 ${targetUser.tag}`)
+            .setColor(getColorByScore(avg))
             .addFields(
-                { name: '📝 Total de avaliações', value: stats.count.toString(), inline: true },
-                { name: '⭐ Média', value: stats.average.toString(), inline: true },
-                { name: '📈 Melhor nota', value: stats.highest.toString(), inline: true },
-                { name: '📉 Pior nota', value: stats.lowest.toString(), inline: true }
+                { name: '📝 Avaliações', value: userReviews.length.toString(), inline: true },
+                { name: '⭐ Média', value: avg.toFixed(2), inline: true },
+                { name: '📈 Melhor', value: Math.max(...scores).toString(), inline: true },
+                { name: '📉 Pior', value: Math.min(...scores).toString(), inline: true }
             )
             .setTimestamp();
         
@@ -796,15 +518,11 @@ client.on('interactionCreate', async interaction => {
         const top3 = await generateWeeklyRanking();
         
         if (!top3 || top3.length === 0) {
-            return interaction.reply({
-                content: '📊 Nenhuma avaliação foi feita esta semana ainda!',
-                flags: MessageFlags.Ephemeral
-            });
+            return interaction.reply({ content: '📊 Nenhuma avaliação esta semana!', flags: MessageFlags.Ephemeral });
         }
         
         const embed = new EmbedBuilder()
             .setTitle('🏆 Ranking da Semana')
-            .setDescription(`Semana ${getWeekNumber(new Date())} de ${new Date().getFullYear()}`)
             .setColor(0xFFD700)
             .setTimestamp();
         
@@ -812,38 +530,17 @@ client.on('interactionCreate', async interaction => {
         for (let i = 0; i < top3.length; i++) {
             embed.addFields({
                 name: `${medals[i]} ${top3[i].userName}`,
-                value: `⭐ Média: ${top3[i].averageScore}/10 | 📝 ${top3[i].totalReviews} avaliações`,
+                value: `⭐ ${top3[i].averageScore}/10 | 📝 ${top3[i].totalReviews}`,
                 inline: false
             });
         }
         
         await interaction.reply({ embeds: [embed] });
     }
-    
-    if (commandName === 'botinfo') {
-        const reviews = loadReviews();
-        const stats = loadStats();
-        const uptime = process.uptime();
-        const memory = process.memoryUsage();
-        
-        const embed = new EmbedBuilder()
-            .setTitle('🤖 Informações do Bot')
-            .setDescription('Bot de avaliação para equipes Discord')
-            .setColor(EMBED_COLOR)
-            .setThumbnail(client.user.displayAvatarURL({ dynamic: true }))
-            .addFields(
-                { name: '📊 Estatísticas', value: `📝 Total de avaliações: ${reviews.length}\n👥 Usuários avaliados: ${Object.keys(stats.users).length}\n🔧 Cargos Staff: ${STAFF_ROLE_IDS.length}\n📡 Servidores: ${client.guilds.cache.size}`, inline: true },
-                { name: '⏰ Sistema', value: `⏱️ Uptime: ${Math.floor(uptime / 86400)}d ${Math.floor((uptime % 86400) / 3600)}h ${Math.floor((uptime % 3600) / 60)}m\n💾 Memória: ${(memory.heapUsed / 1024 / 1024).toFixed(2)} MB`, inline: true }
-            )
-            .setFooter({ text: `Bot ID: ${client.user.id} | Guild: ${GUILD_ID}` })
-            .setTimestamp();
-        
-        await interaction.reply({ embeds: [embed] });
-    }
 });
 
 // ============================================
-// HANDLER: BOTÃO DE AVALIAÇÃO
+// HANDLER: BOTÃO
 // ============================================
 
 client.on('interactionCreate', async interaction => {
@@ -854,107 +551,87 @@ client.on('interactionCreate', async interaction => {
     
     if (!canReview(member)) {
         return interaction.reply({
-            content: '❌ Você é membro da staff e não pode avaliar outros membros da staff! Apenas membros comuns podem avaliar.',
+            content: '❌ Membros da staff não podem avaliar!',
             flags: MessageFlags.Ephemeral
         });
     }
     
     const guild = client.guilds.cache.get(GUILD_ID);
     if (!guild) {
-        return interaction.reply({
-            content: '❌ Servidor não encontrado!',
-            flags: MessageFlags.Ephemeral
-        });
+        return interaction.reply({ content: '❌ Erro!', flags: MessageFlags.Ephemeral });
     }
     
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     
-    // Tentar buscar membros staff
-    let staffMembers = await fetchStaffMembers(guild);
+    // Buscar membros staff
+    const staffMembers = await getStaffMembers(guild);
     
-    if (staffMembers.length === 0) {
-        staffMembers = await fetchStaffMembersAlternative(guild);
+    // Filtrar o próprio usuário
+    const availableMembers = staffMembers.filter(m => m.id !== member.id);
+    
+    if (availableMembers.length === 0) {
+        return interaction.editReply({ content: '❌ Nenhum membro da staff disponível!' });
     }
-    
-    if (staffMembers.length === 0) {
-        const errorMessage = `❌ Nenhum membro da staff encontrado!\n\n📋 **Cargos configurados:** ${STAFF_ROLE_IDS.join(', ')}\n\n🔍 **Verifique:**\n1. Os IDs dos cargos estão corretos?\n2. Os cargos têm membros?\n3. O bot tem permissão "Membros do Servidor"?\n4. O bot está no servidor correto?`;
-        
-        return interaction.editReply({ content: errorMessage });
-    }
-    
-    const options = staffMembers.map(m => ({
-        label: m.name.length > 25 ? m.name.substring(0, 22) + '...' : m.name,
-        value: m.id,
-        description: `Cargo: ${m.roleName.substring(0, 50)}`,
-        emoji: '⭐'
-    })).slice(0, 25);
     
     const selectMenu = new StringSelectMenuBuilder()
-        .setCustomId('select_staff_to_review')
-        .setPlaceholder(`👤 Selecione um dos ${staffMembers.length} membros da staff`)
-        .addOptions(options);
+        .setCustomId('select_staff')
+        .setPlaceholder(`👤 Selecione um membro (${availableMembers.length} disponíveis)`)
+        .addOptions(
+            availableMembers.map(m => ({
+                label: m.name.length > 25 ? m.name.substring(0, 22) + '...' : m.name,
+                value: m.id,
+                description: `Cargo: ${m.roleName}`,
+                emoji: '⭐'
+            })).slice(0, 25)
+        );
     
     const row = new ActionRowBuilder().addComponents(selectMenu);
     
     await interaction.editReply({
-        content: `**📋 Selecione o membro da staff que deseja avaliar:**\n\n👥 Total de membros disponíveis: ${staffMembers.length}`,
+        content: `**📋 Selecione o membro da staff para avaliar:**`,
         components: [row]
     });
 });
 
 // ============================================
-// HANDLER: SELEÇÃO DE USUÁRIO
+// HANDLER: SELECT MENU
 // ============================================
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isStringSelectMenu()) return;
-    if (interaction.customId !== 'select_staff_to_review') return;
+    if (interaction.customId !== 'select_staff') return;
     
-    const selectedUserId = interaction.values[0];
+    const selectedId = interaction.values[0];
     const guild = client.guilds.cache.get(GUILD_ID);
     
     if (!guild) {
-        return interaction.update({
-            content: '❌ Servidor não encontrado!',
-            components: [],
-        });
+        return interaction.update({ content: '❌ Erro!', components: [] });
     }
     
     await guild.members.fetch();
-    const targetMember = await guild.members.fetch(selectedUserId).catch(() => null);
+    const target = await guild.members.fetch(selectedId).catch(() => null);
     
-    if (!targetMember) {
-        return interaction.update({
-            content: '❌ Usuário não encontrado!',
-            components: [],
-        });
+    if (!target) {
+        return interaction.update({ content: '❌ Usuário não encontrado!', components: [] });
     }
     
-    if (!isStaff(targetMember)) {
-        return interaction.update({
-            content: '❌ Este usuário não é membro da staff!',
-            components: [],
-        });
-    }
-    
+    // Verificar limite diário
     const reviews = loadReviews();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const todayReviews = reviews.filter(r => 
+    const todayCount = reviews.filter(r => 
         r.reviewerId === interaction.user.id && 
         new Date(r.createdAt) >= today
-    );
+    ).length;
     
-    if (todayReviews.length >= 10) {
-        return interaction.update({
-            content: '❌ Você atingiu o limite de 10 avaliações por dia!',
-            components: [],
-        });
+    if (todayCount >= 10) {
+        return interaction.update({ content: '❌ Limite de 10 avaliações por dia!', components: [] });
     }
     
+    // Modal
     const modal = new ModalBuilder()
-        .setCustomId(`review_modal_${selectedUserId}`)
-        .setTitle(`Avaliar ${targetMember.user.displayName}`);
+        .setCustomId(`review_${selectedId}`)
+        .setTitle(`Avaliar ${target.user.displayName}`);
     
     const scoreInput = new TextInputBuilder()
         .setCustomId('score')
@@ -967,60 +644,55 @@ client.on('interactionCreate', async interaction => {
     
     const feedbackInput = new TextInputBuilder()
         .setCustomId('feedback')
-        .setLabel('Feedback (máx. 700 caracteres)')
+        .setLabel('Feedback (max 700 caracteres)')
         .setStyle(TextInputStyle.Paragraph)
         .setPlaceholder('O que você achou? O que podia melhorar?')
         .setRequired(false)
-        .setMaxLength(MAX_FEEDBACK_LENGTH);
+        .setMaxLength(700);
     
-    const firstRow = new ActionRowBuilder().addComponents(scoreInput);
-    const secondRow = new ActionRowBuilder().addComponents(feedbackInput);
-    
-    modal.addComponents(firstRow, secondRow);
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(scoreInput),
+        new ActionRowBuilder().addComponents(feedbackInput)
+    );
     
     client.tempReviewData.set(interaction.user.id, {
-        targetId: selectedUserId,
-        targetName: targetMember.user.tag,
-        targetDisplayName: targetMember.user.displayName,
-        timestamp: Date.now()
+        targetId: selectedId,
+        targetName: target.user.tag
     });
     
     await interaction.showModal(modal);
 });
 
 // ============================================
-// HANDLER: MODAL DE AVALIAÇÃO
+// HANDLER: MODAL
 // ============================================
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isModalSubmit()) return;
-    if (!interaction.customId.startsWith('review_modal_')) return;
+    if (!interaction.customId.startsWith('review_')) return;
     
-    const targetId = interaction.customId.replace('review_modal_', '');
+    const targetId = interaction.customId.replace('review_', '');
     const score = parseInt(interaction.fields.getTextInputValue('score'));
-    const feedback = interaction.fields.getTextInputValue('feedback') || 'Sem feedback fornecido';
+    const feedback = interaction.fields.getTextInputValue('feedback') || 'Sem feedback';
     
     if (isNaN(score) || score < 0 || score > 10) {
         return interaction.reply({
-            content: '❌ Nota inválida! Por favor, insira um número entre 0 e 10.',
+            content: '❌ Nota inválida! Use 0 a 10.',
             flags: MessageFlags.Ephemeral
         });
     }
     
-    const tempData = client.tempReviewData.get(interaction.user.id);
-    if (!tempData || tempData.targetId !== targetId) {
+    const temp = client.tempReviewData.get(interaction.user.id);
+    if (!temp || temp.targetId !== targetId) {
         return interaction.reply({
-            content: '❌ Sessão expirada! Por favor, clique no botão novamente.',
+            content: '❌ Sessão expirada!',
             flags: MessageFlags.Ephemeral
         });
     }
     
     const guild = client.guilds.cache.get(GUILD_ID);
     if (!guild) {
-        return interaction.reply({
-            content: '❌ Servidor não encontrado!',
-            flags: MessageFlags.Ephemeral
-        });
+        return interaction.reply({ content: '❌ Erro!', flags: MessageFlags.Ephemeral });
     }
     
     await guild.members.fetch();
@@ -1028,12 +700,10 @@ client.on('interactionCreate', async interaction => {
     const reviewed = await guild.members.fetch(targetId).catch(() => null);
     
     if (!reviewed) {
-        return interaction.reply({
-            content: '❌ Usuário avaliado não encontrado!',
-            flags: MessageFlags.Ephemeral
-        });
+        return interaction.reply({ content: '❌ Usuário não encontrado!', flags: MessageFlags.Ephemeral });
     }
     
+    // Salvar avaliação
     const reviews = loadReviews();
     const newReview = {
         id: Date.now().toString(),
@@ -1053,6 +723,7 @@ client.on('interactionCreate', async interaction => {
     reviews.push(newReview);
     saveReviews(reviews);
     
+    // Atualizar stats
     const stats = loadStats();
     stats.reviews = reviews.length;
     if (!stats.users[reviewed.id]) {
@@ -1062,18 +733,15 @@ client.on('interactionCreate', async interaction => {
     stats.users[reviewed.id].totalScore += score;
     saveStats(stats);
     
-    const color = getColorByScore(score);
-    const scoreEmoji = getScoreEmoji(score);
-    const scoreDesc = getScoreDescription(score);
-    
+    // Log embed
     const logEmbed = new EmbedBuilder()
-        .setTitle(`${scoreEmoji} Nova Avaliação - ${scoreDesc}`)
-        .setColor(color)
+        .setTitle(`${getScoreEmoji(score)} Nova Avaliação`)
+        .setColor(getColorByScore(score))
         .addFields(
             { name: '👤 Avaliador', value: reviewer.tag, inline: true },
             { name: '⭐ Avaliado', value: reviewed.user.tag, inline: true },
             { name: '🎯 Nota', value: `${score}/10`, inline: true },
-            { name: '💬 Feedback', value: feedback.length > 1024 ? feedback.substring(0, 1021) + '...' : feedback, inline: false }
+            { name: '💬 Feedback', value: feedback, inline: false }
         )
         .setTimestamp();
     
@@ -1084,23 +752,12 @@ client.on('interactionCreate', async interaction => {
     
     client.tempReviewData.delete(interaction.user.id);
     
-    const successEmbed = new EmbedBuilder()
-        .setTitle('✅ Avaliação Enviada!')
-        .setDescription(`Sua avaliação para **${reviewed.user.displayName}** foi registrada com sucesso!`)
-        .setColor(0x00FF00)
-        .addFields(
-            { name: 'Nota', value: `${score}/10 - ${scoreDesc}`, inline: true },
-            { name: 'Feedback', value: feedback.length > 100 ? feedback.substring(0, 97) + '...' : feedback, inline: false }
-        )
-        .setTimestamp();
-    
     await interaction.reply({
-        embeds: [successEmbed],
+        content: `✅ Avaliação para **${reviewed.user.displayName}** registrada! Nota: ${score}/10`,
         flags: MessageFlags.Ephemeral
     });
     
-    console.log(`📝 Nova avaliação: ${reviewer.tag} -> ${reviewed.user.tag} (${score}/10)`);
-    addLog({ type: 'REVIEW_CREATED', reviewer: reviewer.tag, reviewed: reviewed.user.tag, score: score });
+    console.log(`📝 ${reviewer.tag} -> ${reviewed.user.tag}: ${score}/10`);
 });
 
 // ============================================
@@ -1111,122 +768,95 @@ client.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (!message.content.startsWith(PREFIX)) return;
     
-    const args = message.content.slice(PREFIX.length).trim().split(/ +/);
+    const args = message.content.slice(1).trim().split(/ +/);
     const command = args.shift().toLowerCase();
     
     if (command === 'help') {
         const embed = new EmbedBuilder()
-            .setTitle('📚 Comandos Disponíveis')
+            .setTitle('📚 Comandos')
             .setColor(EMBED_COLOR)
             .addFields(
-                { name: '🔹 Comandos Slash', value: '`/clearall` - Limpar canal (Staff)\n`/clear` - Limpar usuário (Staff)\n`/stats` - Ver estatísticas\n`/ranking` - Ranking semanal\n`/botinfo` - Informações do bot', inline: false },
-                { name: '🔸 Comandos de Texto', value: '`!help` - Esta mensagem\n`!ping` - Verificar latência\n`!info` - Informações do bot\n`!top` - Ranking geral\n`!stats @user` - Estatísticas de um usuário', inline: false }
-            )
-            .setTimestamp();
+                { name: 'Slash', value: '`/clearall` `/clear` `/stats` `/ranking`', inline: false },
+                { name: 'Texto', value: '`!help` `!ping` `!top` `!stats @user`', inline: false }
+            );
         await message.reply({ embeds: [embed] });
     }
     
     else if (command === 'ping') {
-        const sent = await message.reply('🏓 Calculando ping...');
+        const sent = await message.reply('🏓 Pong!');
         const latency = sent.createdTimestamp - message.createdTimestamp;
-        await sent.edit(`🏓 Pong! Latência: ${latency}ms | API: ${Math.round(client.ws.ping)}ms`);
-    }
-    
-    else if (command === 'info') {
-        const reviews = loadReviews();
-        const stats = loadStats();
-        const uptime = process.uptime();
-        const memory = process.memoryUsage();
-        
-        const embed = new EmbedBuilder()
-            .setTitle('🤖 Informações do Bot')
-            .setDescription('Bot de avaliação para equipes Discord')
-            .setColor(EMBED_COLOR)
-            .addFields(
-                { name: '📊 Estatísticas', value: `📝 Total de avaliações: ${reviews.length}\n👥 Usuários avaliados: ${Object.keys(stats.users).length}\n🔧 Cargos Staff: ${STAFF_ROLE_IDS.length}\n📡 Servidores: ${client.guilds.cache.size}`, inline: true },
-                { name: '⏰ Sistema', value: `⏱️ Uptime: ${Math.floor(uptime / 86400)}d ${Math.floor((uptime % 86400) / 3600)}h ${Math.floor((uptime % 3600) / 60)}m\n💾 Memória: ${(memory.heapUsed / 1024 / 1024).toFixed(2)} MB`, inline: true }
-            )
-            .setTimestamp();
-        await message.reply({ embeds: [embed] });
+        await sent.edit(`🏓 Pong! ${latency}ms | API: ${Math.round(client.ws.ping)}ms`);
     }
     
     else if (command === 'top') {
         const reviews = loadReviews();
-        const userScores = new Map();
+        const scores = new Map();
         
-        reviews.forEach(review => {
-            if (!userScores.has(review.reviewedId)) {
-                userScores.set(review.reviewedId, {
-                    name: review.reviewedName,
-                    totalScore: 0,
-                    count: 0
-                });
+        reviews.forEach(r => {
+            if (!scores.has(r.reviewedId)) {
+                scores.set(r.reviewedId, { name: r.reviewedName, total: 0, count: 0 });
             }
-            const data = userScores.get(review.reviewedId);
-            data.totalScore += review.score;
+            const data = scores.get(r.reviewedId);
+            data.total += r.score;
             data.count++;
         });
         
-        const rankings = [];
-        for (const [userId, data] of userScores) {
-            rankings.push({
+        const ranking = [];
+        for (const [id, data] of scores) {
+            ranking.push({
                 name: data.name,
-                averageScore: parseFloat((data.totalScore / data.count).toFixed(2)),
-                totalReviews: data.count
+                avg: (data.total / data.count).toFixed(2),
+                count: data.count
             });
         }
         
-        rankings.sort((a, b) => b.averageScore - a.averageScore);
-        const top10 = rankings.slice(0, 10);
+        ranking.sort((a, b) => parseFloat(b.avg) - parseFloat(a.avg));
+        const top10 = ranking.slice(0, 10);
         
         if (top10.length === 0) {
-            return message.reply('📊 Nenhuma avaliação registrada ainda!');
+            return message.reply('📊 Sem avaliações!');
         }
         
         const embed = new EmbedBuilder()
-            .setTitle('🏆 Ranking Geral - Top 10')
-            .setColor(0xFFD700)
-            .setTimestamp();
+            .setTitle('🏆 Top 10 Geral')
+            .setColor(0xFFD700);
         
-        for (let i = 0; i < top10.length; i++) {
-            const r = top10[i];
-            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}º`;
-            embed.addFields({
-                name: `${medal} ${r.name}`,
-                value: `⭐ Média: ${r.averageScore}/10 | 📝 ${r.totalReviews} avaliações`,
-                inline: false
-            });
-        }
+        top10.forEach((r, i) => {
+            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}º`;
+            embed.addFields({ name: `${medal} ${r.name}`, value: `⭐ ${r.avg}/10 | 📝 ${r.count}`, inline: false });
+        });
         
         await message.reply({ embeds: [embed] });
     }
     
     else if (command === 'stats') {
         const target = message.mentions.users.first() || message.author;
-        const stats = calculateUserStats(target.id);
+        const reviews = loadReviews();
+        const userReviews = reviews.filter(r => r.reviewedId === target.id);
         
-        if (stats.count === 0) {
-            return message.reply(`📊 Nenhuma avaliação encontrada para ${target.tag}.`);
+        if (userReviews.length === 0) {
+            return message.reply(`📊 ${target.tag} sem avaliações.`);
         }
         
+        const scores = userReviews.map(r => r.score);
+        const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+        
         const embed = new EmbedBuilder()
-            .setTitle(`📊 Estatísticas de ${target.tag}`)
-            .setColor(getColorByScore(stats.average))
-            .setThumbnail(target.displayAvatarURL({ dynamic: true }))
+            .setTitle(`📊 ${target.tag}`)
+            .setColor(getColorByScore(avg))
             .addFields(
-                { name: '📝 Total de avaliações', value: stats.count.toString(), inline: true },
-                { name: '⭐ Média', value: stats.average.toString(), inline: true },
-                { name: '📈 Melhor nota', value: stats.highest.toString(), inline: true },
-                { name: '📉 Pior nota', value: stats.lowest.toString(), inline: true }
-            )
-            .setTimestamp();
+                { name: '📝 Total', value: userReviews.length.toString(), inline: true },
+                { name: '⭐ Média', value: avg.toFixed(2), inline: true },
+                { name: '📈 Melhor', value: Math.max(...scores).toString(), inline: true },
+                { name: '📉 Pior', value: Math.min(...scores).toString(), inline: true }
+            );
         
         await message.reply({ embeds: [embed] });
     }
 });
 
 // ============================================
-// LIMPEZA PERIÓDICA
+// LIMPEZA
 // ============================================
 
 setInterval(() => {
@@ -1238,49 +868,18 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000);
 
-setInterval(() => {
-    const sixMonthsAgo = new Date();
-    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-    
-    const reviews = loadReviews();
-    const newReviews = reviews.filter(r => new Date(r.createdAt) > sixMonthsAgo);
-    if (newReviews.length !== reviews.length) {
-        saveReviews(newReviews);
-        console.log(`🧹 Limpeza: ${reviews.length - newReviews.length} avaliações antigas removidas`);
-    }
-}, 24 * 60 * 60 * 1000);
-
-// ============================================
-// TRATAMENTO DE ERROS
-// ============================================
-
-process.on('unhandledRejection', (error) => {
-    console.error('❌ Promise rejection não tratada:', error);
-    addLog({ type: 'ERROR', error: error.message, stack: error.stack });
-});
-
-process.on('uncaughtException', (error) => {
-    console.error('❌ Exceção não capturada:', error);
-    addLog({ type: 'FATAL', error: error.message, stack: error.stack });
-});
-
 // ============================================
 // INICIALIZAÇÃO
 // ============================================
 
 console.log('='.repeat(60));
-console.log('🚀 INICIANDO BOT DE AVALIAÇÃO v6.0 - DEBUG');
+console.log('🚀 BOT DE AVALIAÇÃO v7.0');
 console.log('='.repeat(60));
-console.log(`🎯 GUILD_ID: ${GUILD_ID || 'NÃO CONFIGURADO'}`);
-console.log(`🔧 Cargos Staff: ${STAFF_ROLE_IDS.length > 0 ? STAFF_ROLE_IDS.join(', ') : 'NENHUM'}`);
-console.log(`📺 REVIEWS_CHANNEL_ID: ${REVIEWS_CHANNEL_ID || 'NÃO CONFIGURADO'}`);
-console.log(`📝 REVIEWS_LOG_CHANNEL_ID: ${REVIEWS_LOG_CHANNEL_ID || 'NÃO CONFIGURADO'}`);
-console.log(`📊 LOG_CHANNEL_ID: ${LOG_CHANNEL_ID || 'NÃO CONFIGURADO'}`);
+console.log(`🎯 GUILD_ID: ${GUILD_ID}`);
+console.log(`🔧 CARGOS: ${STAFF_ROLE_IDS.length}`);
 console.log('='.repeat(60));
 
 client.login(TOKEN).catch(error => {
-    console.error('❌ Erro ao fazer login:', error);
+    console.error('❌ Erro:', error);
     process.exit(1);
 });
-
-module.exports = { client, isStaff, canReview, getColorByScore, getScoreEmoji, createBackup };
