@@ -1,0 +1,33 @@
+{
+  "name": "sistema-avaliacao-discord-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord com sistema completo de avaliação, ranking semanal e moderação",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "moderation",
+    "reviews",
+    "ranking",
+    "discord.js"
+  ],
+  "author": "HostVille",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.5",
+    "chalk": "^4.1.2",
+    "fs": "^0.0.1-security",
+    "path": "^0.12.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
