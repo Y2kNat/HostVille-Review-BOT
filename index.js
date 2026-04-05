@@ -403,12 +403,11 @@ async function setupReviewsChannel() {
                 inline: false 
             }
         )
-        .setFooter({ text: `Sistema de Avaliação` })
-        .setTimestamp();
+        .setFooter({ text: `Sistema de Avaliação • 𝙱𝚢 𝒴2𝓀_𝒩𝒶𝓉` })
     
     const button = new ButtonBuilder()
         .setCustomId('open_review_menu')
-        .setLabel('🛠 Avaliar equipe')
+        .setLabel('Avaliar equipe')
         .setStyle(ButtonStyle.Primary)
         .setEmoji('⭐');
     
