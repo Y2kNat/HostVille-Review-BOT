@@ -1,7 +1,7 @@
 // ============================================
 // index.js - Bot Discord com Sistema de Avaliação
 // ============================================
-// Versão: 8.0.0 - FINAL
+// Versão: 9.0.0 - COM CACHE E ANTI-RATE-LIMIT
 // ============================================
 
 require('dotenv').config();
@@ -41,6 +41,8 @@ const client = new Client({
 // Collections
 client.commands = new Collection();
 client.tempReviewData = new Map();
+client.staffMembersCache = null;
+client.lastFetchTime = 0;
 
 // ============================================
 // VARIÁVEIS DE AMBIENTE
@@ -62,6 +64,7 @@ const STAFF_ROLE_IDS = [
 // Constantes
 const EMBED_COLOR = '#341539';
 const MAX_FEEDBACK_LENGTH = 700;
+const CACHE_TTL = 300000; // 5 minutos de cache
 
 // ============================================
 // ARMAZENAMENTO EM ARQUIVO
@@ -143,8 +146,7 @@ function formatDate(date) {
         month: '2-digit',
         year: 'numeric',
         hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
+        minute: '2-digit'
     }).format(new Date(date));
 }
 
@@ -157,34 +159,80 @@ function getWeekNumber(date) {
 }
 
 // ============================================
-// BUSCAR MEMBROS STAFF
+// BUSCAR MEMBROS STAFF COM CACHE
 // ============================================
 
-async function getStaffMembers(guild) {
-    console.log('🔍 Buscando membros staff...');
+async function getStaffMembers(guild, forceRefresh = false) {
+    const now = Date.now();
     
-    await guild.members.fetch({ limit: 1000, force: true, cache: true });
-    
-    const staffMembers = [];
-    
-    for (const roleId of STAFF_ROLE_IDS) {
-        const role = guild.roles.cache.get(roleId);
-        if (role) {
-            for (const [memberId, member] of role.members) {
-                if (!staffMembers.find(m => m.id === memberId)) {
-                    staffMembers.push({
-                        id: member.id,
-                        name: member.user.tag,
-                        displayName: member.displayName,
-                        roleName: role.name,
-                        roleId: role.id
-                    });
-                }
-            }
-        }
+    // Usar cache se ainda for válido
+    if (!forceRefresh && client.staffMembersCache && (now - client.lastFetchTime) < CACHE_TTL) {
+        console.log('📦 Usando cache de membros staff');
+        return client.staffMembersCache;
     }
     
-    return staffMembers;
+    console.log('🔄 Buscando membros staff...');
+    
+    try {
+        // Buscar apenas membros necessários com delay entre requisições
+        await delay(1000);
+        
+        // Buscar membros do servidor de forma controlada
+        const members = await guild.members.fetch({ 
+            limit: 200,
+            cache: true,
+            force: false
+        });
+        
+        console.log(`📊 Total de membros no servidor: ${members.size}`);
+        
+        const staffMembers = [];
+        const processedIds = new Set();
+        
+        // Buscar membros por cargo
+        for (const roleId of STAFF_ROLE_IDS) {
+            await delay(500); // Delay entre cada cargo
+            
+            const role = guild.roles.cache.get(roleId);
+            if (role) {
+                console.log(`📌 Cargo: ${role.name} - ${role.members.size} membros`);
+                
+                for (const [memberId, member] of role.members) {
+                    if (!processedIds.has(memberId)) {
+                        processedIds.add(memberId);
+                        staffMembers.push({
+                            id: member.id,
+                            name: member.user.tag,
+                            displayName: member.displayName,
+                            roleName: role.name,
+                            roleId: role.id
+                        });
+                    }
+                }
+            } else {
+                console.log(`⚠️ Cargo não encontrado: ${roleId}`);
+            }
+        }
+        
+        console.log(`✅ Total de membros staff únicos: ${staffMembers.length}`);
+        
+        // Atualizar cache
+        client.staffMembersCache = staffMembers;
+        client.lastFetchTime = now;
+        
+        return staffMembers;
+        
+    } catch (error) {
+        console.error('❌ Erro ao buscar membros:', error.message);
+        
+        // Retornar cache antigo se disponível
+        if (client.staffMembersCache) {
+            console.log('⚠️ Usando cache antigo devido a erro');
+            return client.staffMembersCache;
+        }
+        
+        return [];
+    }
 }
 
 // ============================================
@@ -276,9 +324,9 @@ const clearAllCommand = new SlashCommandBuilder()
             .setRequired(true))
     .addIntegerOption(option =>
         option.setName('limit')
-            .setDescription('Quantidade de mensagens (padrão: 100, máximo: 1000)')
+            .setDescription('Quantidade de mensagens (padrão: 100, máximo: 500)')
             .setMinValue(1)
-            .setMaxValue(1000)
+            .setMaxValue(500)
             .setRequired(false));
 
 const clearCommand = new SlashCommandBuilder()
@@ -436,6 +484,14 @@ client.once('clientReady', async () => {
         }
     }, 60 * 1000);
     
+    // Atualizar cache a cada 5 minutos
+    setInterval(async () => {
+        const guild = client.guilds.cache.first();
+        if (guild) {
+            await getStaffMembers(guild, true);
+        }
+    }, CACHE_TTL);
+    
     // Atualizar status
     updateStatus();
 });
@@ -480,7 +536,7 @@ client.on('interactionCreate', async interaction => {
         }
         
         const channel = options.getChannel('channel');
-        const limit = options.getInteger('limit') || 100;
+        const limit = Math.min(options.getInteger('limit') || 100, 500);
         
         if (!channel.isTextBased()) {
             const embed = new EmbedBuilder()
@@ -501,18 +557,20 @@ client.on('interactionCreate', async interaction => {
         
         try {
             let deletedCount = 0;
-            let remaining = limit;
+            let fetched = await channel.messages.fetch({ limit: limit });
+            const filtered = fetched.filter(msg => !msg.pinned);
             
-            while (remaining > 0) {
-                const fetchLimit = Math.min(remaining, 100);
-                const fetched = await channel.messages.fetch({ limit: fetchLimit });
-                if (fetched.size === 0) break;
-                
-                const deleted = await channel.bulkDelete(fetched, true);
-                deletedCount += deleted.size;
-                remaining -= deleted.size;
-                await delay(500);
+            if (filtered.size === 0) {
+                const embed = new EmbedBuilder()
+                    .setTitle('⚠️ Nada para apagar')
+                    .setDescription('Não há mensagens não fixadas neste canal!')
+                    .setColor(0xFFFF00)
+                    .setTimestamp();
+                return interaction.editReply({ embeds: [embed] });
             }
+            
+            const deleted = await channel.bulkDelete(filtered, true);
+            deletedCount = deleted.size;
             
             const successEmbed = new EmbedBuilder()
                 .setTitle('✅ Limpeza Concluída')
@@ -554,7 +612,7 @@ client.on('interactionCreate', async interaction => {
         }
         
         const targetUser = options.getUser('user');
-        const limit = options.getInteger('limit') || 100;
+        const limit = Math.min(options.getInteger('limit') || 100, 500);
         const channel = interaction.channel;
         
         const processEmbed = new EmbedBuilder()
@@ -567,20 +625,20 @@ client.on('interactionCreate', async interaction => {
         
         try {
             let deletedCount = 0;
-            let remaining = limit;
+            let fetched = await channel.messages.fetch({ limit: limit });
+            let messagesToDelete = fetched.filter(msg => msg.author.id === targetUser.id && !msg.pinned);
             
-            while (remaining > 0) {
-                const fetchLimit = Math.min(remaining, 100);
-                const fetched = await channel.messages.fetch({ limit: fetchLimit });
-                const messagesToDelete = fetched.filter(msg => msg.author.id === targetUser.id);
-                
-                if (messagesToDelete.size === 0) break;
-                
-                await channel.bulkDelete(messagesToDelete, true);
-                deletedCount += messagesToDelete.size;
-                remaining -= messagesToDelete.size;
-                await delay(500);
+            if (messagesToDelete.size === 0) {
+                const embed = new EmbedBuilder()
+                    .setTitle('⚠️ Nada para apagar')
+                    .setDescription(`Não há mensagens de ${targetUser.tag} para apagar!`)
+                    .setColor(0xFFFF00)
+                    .setTimestamp();
+                return interaction.editReply({ embeds: [embed] });
             }
+            
+            await channel.bulkDelete(messagesToDelete, true);
+            deletedCount = messagesToDelete.size;
             
             const successEmbed = new EmbedBuilder()
                 .setTitle('✅ Limpeza Concluída')
@@ -617,17 +675,6 @@ client.on('interactionCreate', async interaction => {
         const allReviews = loadReviews();
         const totalReviews = allReviews.length;
         
-        if (stats.count === 0) {
-            const embed = new EmbedBuilder()
-                .setTitle(`📊 Estatísticas de ${targetUser.tag}`)
-                .setDescription(`📝 **Total de avaliações recebidas:** 0\n⭐ **Média:** 0/10\n📈 **Melhor nota:** N/A\n📉 **Pior nota:** N/A\n📐 **Mediana:** N/A`)
-                .setColor(EMBED_COLOR)
-                .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
-                .setFooter({ text: `ID: ${targetUser.id}` })
-                .setTimestamp();
-            return interaction.reply({ embeds: [embed] });
-        }
-        
         const scoreEmoji = getScoreEmoji(stats.average);
         
         const embed = new EmbedBuilder()
@@ -636,17 +683,21 @@ client.on('interactionCreate', async interaction => {
             .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
             .addFields(
                 { name: '📝 Total de avaliações', value: stats.count.toString(), inline: true },
-                { name: '⭐ Média', value: `${stats.average}/10`, inline: true },
-                { name: '📐 Mediana', value: `${stats.median}/10`, inline: true },
-                { name: '📈 Melhor nota', value: stats.highest.toString(), inline: true },
-                { name: '📉 Pior nota', value: stats.lowest.toString(), inline: true },
+                { name: '⭐ Média', value: stats.count > 0 ? `${stats.average}/10` : '0/10', inline: true },
+                { name: '📐 Mediana', value: stats.count > 0 ? `${stats.median}/10` : 'N/A', inline: true },
+                { name: '📈 Melhor nota', value: stats.count > 0 ? stats.highest.toString() : 'N/A', inline: true },
+                { name: '📉 Pior nota', value: stats.count > 0 ? stats.lowest.toString() : 'N/A', inline: true },
                 { name: '📊 Total no sistema', value: totalReviews.toString(), inline: true }
             )
             .setFooter({ text: `ID: ${targetUser.id} | Dados de todas as avaliações` })
             .setTimestamp();
         
+        if (stats.count === 0) {
+            embed.setDescription('📊 Este usuário ainda não recebeu nenhuma avaliação!');
+        }
+        
         // Adicionar últimas avaliações
-        if (stats.recentReviews.length > 0) {
+        if (stats.recentReviews && stats.recentReviews.length > 0) {
             const recentText = stats.recentReviews.slice(0, 3).map(r => {
                 const emoji = getScoreEmoji(r.score);
                 return `${emoji} **${r.score}/10** - *"${r.feedback.substring(0, 50)}${r.feedback.length > 50 ? '...' : ''}"*\n👤 por ${r.reviewerName} (${formatDate(r.createdAt)})`;
@@ -662,16 +713,6 @@ client.on('interactionCreate', async interaction => {
         const top3 = await generateWeeklyRanking();
         const now = new Date();
         
-        if (!top3 || top3.length === 0) {
-            const embed = new EmbedBuilder()
-                .setTitle('🏆 Ranking da Semana')
-                .setDescription(`Semana ${getWeekNumber(now)} de ${now.getFullYear()}`)
-                .addFields({ name: '📊 Nenhum dado', value: 'Nenhuma avaliação foi feita esta semana ainda!', inline: false })
-                .setColor(EMBED_COLOR)
-                .setTimestamp();
-            return interaction.reply({ embeds: [embed] });
-        }
-        
         const embed = new EmbedBuilder()
             .setTitle('🏆 Ranking da Semana')
             .setDescription(`Semana ${getWeekNumber(now)} de ${now.getFullYear()}`)
@@ -679,18 +720,21 @@ client.on('interactionCreate', async interaction => {
             .setThumbnail('https://cdn.discordapp.com/emojis/890915467471437854.png')
             .setTimestamp();
         
-        const medals = ['🥇', '🥈', '🥉'];
-        const medalNames = ['OURO', 'PRATA', 'BRONZE'];
-        const medalColors = ['#FFD700', '#C0C0C0', '#CD7F32'];
-        
-        for (let i = 0; i < top3.length; i++) {
-            const member = top3[i];
-            const scoreEmoji = getScoreEmoji(member.averageScore);
-            embed.addFields({
-                name: `${medals[i]} ${medalNames[i]} - ${member.userName}`,
-                value: `${scoreEmoji} **Média:** ${member.averageScore}/10\n📝 **Total de avaliações:** ${member.totalReviews}`,
-                inline: false
-            });
+        if (!top3 || top3.length === 0) {
+            embed.addFields({ name: '📊 Nenhum dado', value: 'Nenhuma avaliação foi feita esta semana ainda!', inline: false });
+        } else {
+            const medals = ['🥇', '🥈', '🥉'];
+            const medalNames = ['OURO', 'PRATA', 'BRONZE'];
+            
+            for (let i = 0; i < top3.length; i++) {
+                const member = top3[i];
+                const scoreEmoji = getScoreEmoji(member.averageScore);
+                embed.addFields({
+                    name: `${medals[i]} ${medalNames[i]} - ${member.userName}`,
+                    value: `${scoreEmoji} **Média:** ${member.averageScore}/10\n📝 **Total de avaliações:** ${member.totalReviews}`,
+                    inline: false
+                });
+            }
         }
         
         await interaction.reply({ embeds: [embed] });
@@ -726,7 +770,7 @@ client.on('interactionCreate', async interaction => {
     if (availableMembers.length === 0) {
         const embed = new EmbedBuilder()
             .setTitle('❌ Nenhum Membro Disponível')
-            .setDescription('Nenhum membro da staff disponível para avaliação no momento!')
+            .setDescription('Nenhum membro da staff disponível para avaliação no momento!\n\nVerifique se os cargos estão configurados corretamente.')
             .setColor(0xFF0000)
             .setTimestamp();
         return interaction.editReply({ embeds: [embed] });
@@ -736,12 +780,12 @@ client.on('interactionCreate', async interaction => {
         .setCustomId('select_staff')
         .setPlaceholder(`👤 Selecione um membro da staff (${availableMembers.length} disponíveis)`)
         .addOptions(
-            availableMembers.map(m => ({
+            availableMembers.slice(0, 25).map(m => ({
                 label: m.name.length > 25 ? m.name.substring(0, 22) + '...' : m.name,
                 value: m.id,
                 description: `Cargo: ${m.roleName.substring(0, 50)}`,
                 emoji: '⭐'
-            })).slice(0, 25)
+            }))
         );
     
     const row = new ActionRowBuilder().addComponents(selectMenu);
@@ -766,7 +810,6 @@ client.on('interactionCreate', async interaction => {
     const selectedId = interaction.values[0];
     const guild = interaction.guild;
     
-    await guild.members.fetch();
     const target = await guild.members.fetch(selectedId).catch(() => null);
     
     if (!target) {
@@ -798,7 +841,7 @@ client.on('interactionCreate', async interaction => {
     
     // Criar modal
     const modal = new ModalBuilder()
-        .setCustomId(`review_${selectedId}`)
+        .setCustomId(`review_${selectedId}_${Date.now()}`)
         .setTitle(`Avaliar ${target.user.displayName}`);
     
     const scoreInput = new TextInputBuilder()
@@ -841,7 +884,9 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isModalSubmit()) return;
     if (!interaction.customId.startsWith('review_')) return;
     
-    const targetId = interaction.customId.replace('review_', '');
+    const parts = interaction.customId.split('_');
+    const targetId = parts[1];
+    
     const score = parseInt(interaction.fields.getTextInputValue('score'));
     const feedback = interaction.fields.getTextInputValue('feedback') || 'Sem feedback fornecido';
     
@@ -865,8 +910,6 @@ client.on('interactionCreate', async interaction => {
     }
     
     const guild = interaction.guild;
-    await guild.members.fetch();
-    
     const reviewer = interaction.user;
     const reviewed = await guild.members.fetch(targetId).catch(() => null);
     
@@ -969,11 +1012,11 @@ setInterval(() => {
 // ============================================
 
 process.on('unhandledRejection', (error) => {
-    console.error('❌ Erro não tratado:', error);
+    console.error('❌ Erro não tratado:', error.message);
 });
 
 process.on('uncaughtException', (error) => {
-    console.error('❌ Exceção não capturada:', error);
+    console.error('❌ Exceção não capturada:', error.message);
 });
 
 // ============================================
@@ -981,7 +1024,7 @@ process.on('uncaughtException', (error) => {
 // ============================================
 
 console.log('='.repeat(60));
-console.log('🚀 BOT DE AVALIAÇÃO v8.0');
+console.log('🚀 BOT DE AVALIAÇÃO v9.0 - ANTI RATE LIMIT');
 console.log('='.repeat(60));
 console.log(`🔧 Cargos Staff: ${STAFF_ROLE_IDS.length}`);
 console.log(`📺 REVIEWS_CHANNEL_ID: ${REVIEWS_CHANNEL_ID || 'NÃO CONFIGURADO'}`);
