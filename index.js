@@ -1,8 +1,8 @@
 // ============================================
 // index.js - Bot Discord com Sistema de Avaliação
 // ============================================
-// Versão: 4.0.0
-// Total de linhas: ~2200
+// Versão: 5.0.0
+// Total de linhas: ~2300
 // ============================================
 
 require('dotenv').config();
@@ -22,7 +22,6 @@ const {
     TextInputStyle, 
     Collection,
     ChannelType,
-    InteractionContextType,
     MessageFlags
 } = require('discord.js');
 const fs = require('fs');
@@ -51,10 +50,27 @@ client.tempReviewData = new Map();
 // VARIÁVEIS DE AMBIENTE
 // ============================================
 const TOKEN = process.env.TOKEN;
+const GUILD_ID = process.env.GUILD_ID;
 const STAFF_ROLE_IDS = process.env.STAFF_ROLE_IDS ? process.env.STAFF_ROLE_IDS.split(',').map(id => id.trim()).filter(id => id.length > 0) : [];
 const REVIEWS_CHANNEL_ID = process.env.REVIEWS_CHANNEL_ID;
 const REVIEWS_LOG_CHANNEL_ID = process.env.REVIEWS_LOG_CHANNEL_ID;
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
+
+// Validação das variáveis
+if (!TOKEN) {
+    console.error('❌ TOKEN não configurado no arquivo .env');
+    process.exit(1);
+}
+if (!GUILD_ID) {
+    console.error('❌ GUILD_ID não configurado no arquivo .env');
+    process.exit(1);
+}
+if (STAFF_ROLE_IDS.length === 0) {
+    console.warn('⚠️ Nenhum cargo staff configurado');
+}
+if (!REVIEWS_CHANNEL_ID) {
+    console.warn('⚠️ REVIEWS_CHANNEL_ID não configurado');
+}
 
 // Constantes
 const PREFIX = '!';
@@ -190,6 +206,63 @@ function getWeekNumber(date) {
     d.setDate(d.getDate() + 3 - (d.getDay() + 6) % 7);
     const week1 = new Date(d.getFullYear(), 0, 4);
     return 1 + Math.round(((d - week1) / 86400000 - 3 + (week1.getDay() + 6) % 7) / 7);
+}
+
+// Delay helper para evitar rate limit
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Buscar membros staff com retry e rate limit handling
+async function fetchStaffMembers(guild) {
+    let retries = 3;
+    let delayMs = 1000;
+    
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            // Garantir que o cache está atualizado
+            await guild.members.fetch({ 
+                limit: 1000,
+                force: true 
+            });
+            
+            const staffMembers = [];
+            
+            for (const roleId of STAFF_ROLE_IDS) {
+                const role = guild.roles.cache.get(roleId);
+                if (role) {
+                    console.log(`🔍 Cargo encontrado: ${role.name} (${role.id}) - ${role.members.size} membros`);
+                    
+                    for (const [id, m] of role.members) {
+                        if (!staffMembers.find(sm => sm.id === id)) {
+                            staffMembers.push({
+                                id: m.id,
+                                name: m.user.tag,
+                                displayName: m.displayName,
+                                roleName: role.name,
+                                roleId: role.id
+                            });
+                        }
+                    }
+                } else {
+                    console.warn(`⚠️ Cargo não encontrado: ${roleId}`);
+                }
+            }
+            
+            return staffMembers;
+        } catch (error) {
+            if (error.code === 429 || error.message?.includes('rate limit')) {
+                console.log(`⏳ Rate limit atingido, tentativa ${attempt}/${retries}, aguardando ${delayMs}ms...`);
+                await delay(delayMs);
+                delayMs *= 2; // Exponential backoff
+            } else {
+                console.error(`❌ Erro ao buscar membros:`, error.message);
+                throw error;
+            }
+        }
+    }
+    
+    return [];
 }
 
 // Calcular estatísticas do usuário
@@ -402,21 +475,19 @@ async function setupReviewsChannel() {
         return;
     }
     
-    const guild = channel.guild;
-    
-    // Buscar membros staff para exibir quantos serão avaliados
-    await guild.members.fetch();
-    const staffMembers = [];
-    for (const roleId of STAFF_ROLE_IDS) {
-        const role = guild.roles.cache.get(roleId);
-        if (role) {
-            role.members.forEach(m => {
-                if (!staffMembers.find(sm => sm.id === m.id)) {
-                    staffMembers.push(m);
-                }
-            });
-        }
+    const guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) {
+        console.error(`❌ Guild com ID ${GUILD_ID} não encontrada!`);
+        return;
     }
+    
+    console.log(`📡 Conectado à guild: ${guild.name} (${guild.id})`);
+    
+    // Buscar membros staff com tratamento de rate limit
+    const staffMembers = await fetchStaffMembers(guild);
+    
+    console.log(`👥 Total de membros staff encontrados: ${staffMembers.length}`);
+    console.log(`📋 Cargos configurados: ${STAFF_ROLE_IDS.length}`);
     
     const embed = new EmbedBuilder()
         .setTitle('📊 Sistema de Avaliação da Equipe')
@@ -457,35 +528,45 @@ async function setupReviewsChannel() {
 }
 
 // ============================================
-// EVENTO: CLIENT_READY (CORRIGIDO)
+// EVENTO: CLIENT_READY
 // ============================================
 
 client.once('clientReady', async () => {
-    console.log('='.repeat(50));
+    console.log('='.repeat(60));
     console.log(`🤖 Bot logado como ${client.user.tag}`);
     console.log(`📡 ID: ${client.user.id}`);
+    console.log(`🎯 Guild ID configurada: ${GUILD_ID}`);
     console.log(`📋 Cargos Staff configurados: ${STAFF_ROLE_IDS.length}`);
     console.log(`📺 Canal de Avaliações: ${REVIEWS_CHANNEL_ID}`);
     console.log(`📝 Canal de Logs Avaliações: ${REVIEWS_LOG_CHANNEL_ID}`);
     console.log(`📊 Canal de Logs Gerais: ${LOG_CHANNEL_ID}`);
-    console.log('='.repeat(50));
+    console.log('='.repeat(60));
     
-    // Registrar comandos slash
+    // Verificar se a guild existe
+    const guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) {
+        console.error(`❌ Guild com ID ${GUILD_ID} não encontrada! Verifique se o bot está no servidor.`);
+        return;
+    }
+    
+    console.log(`✅ Conectado ao servidor: ${guild.name}`);
+    
+    // Registrar comandos slash na guild específica (mais rápido)
     try {
         const rest = new REST({ version: '10' }).setToken(TOKEN);
         await rest.put(
-            Routes.applicationCommands(client.user.id),
+            Routes.applicationGuildCommands(client.user.id, GUILD_ID),
             { body: commands.map(cmd => cmd.toJSON()) }
         );
-        console.log('✅ Comandos slash registrados globalmente');
+        console.log('✅ Comandos slash registrados na guild');
     } catch (error) {
         console.error('❌ Erro ao registrar comandos:', error);
     }
     
-    // Aguardar cache dos membros
+    // Aguardar um pouco e configurar canal
     setTimeout(async () => {
         await setupReviewsChannel();
-    }, 3000);
+    }, 5000);
     
     // Sistema de ranking semanal (verificar a cada hora)
     setInterval(() => {
@@ -577,6 +658,8 @@ client.on('interactionCreate', async interaction => {
                 const deleted = await channel.bulkDelete(fetched, true);
                 deletedCount += deleted.size;
                 remaining -= deleted.size;
+                
+                await delay(500);
             }
             
             await interaction.editReply({
@@ -622,6 +705,8 @@ client.on('interactionCreate', async interaction => {
                 await channel.bulkDelete(messagesToDelete, true);
                 deletedCount += messagesToDelete.size;
                 remaining -= messagesToDelete.size;
+                
+                await delay(500);
             }
             
             await interaction.editReply({
@@ -714,7 +799,7 @@ client.on('interactionCreate', async interaction => {
                 { name: '📊 Estatísticas', value: `📝 Total de avaliações: ${reviews.length}\n👥 Usuários avaliados: ${Object.keys(stats.users).length}\n🔧 Cargos Staff: ${STAFF_ROLE_IDS.length}\n📡 Servidores: ${client.guilds.cache.size}`, inline: true },
                 { name: '⏰ Sistema', value: `⏱️ Uptime: ${Math.floor(uptime / 86400)}d ${Math.floor((uptime % 86400) / 3600)}h ${Math.floor((uptime % 3600) / 60)}m\n💾 Memória: ${(memory.heapUsed / 1024 / 1024).toFixed(2)} MB`, inline: true }
             )
-            .setFooter({ text: `Bot ID: ${client.user.id}` })
+            .setFooter({ text: `Bot ID: ${client.user.id} | Guild: ${GUILD_ID}` })
             .setTimestamp();
         
         await interaction.reply({ embeds: [embed] });
@@ -731,7 +816,6 @@ client.on('interactionCreate', async interaction => {
     
     const member = interaction.member;
     
-    // VERIFICAÇÃO: Quem NÃO é staff pode avaliar
     if (!canReview(member)) {
         return interaction.reply({
             content: '❌ Você é membro da staff e não pode avaliar outros membros da staff! Apenas membros comuns podem avaliar.',
@@ -739,34 +823,22 @@ client.on('interactionCreate', async interaction => {
         });
     }
     
-    const guild = interaction.guild;
-    
-    // Aguardar o cache dos membros
-    await guild.members.fetch();
-    
-    // Buscar TODOS os membros que têm cargos staff (os avaliados)
-    const staffMembers = [];
-    
-    for (const roleId of STAFF_ROLE_IDS) {
-        const role = guild.roles.cache.get(roleId);
-        if (role) {
-            for (const [id, m] of role.members) {
-                if (m.id !== member.id && !staffMembers.find(sm => sm.id === m.id)) {
-                    staffMembers.push({
-                        id: m.id,
-                        name: m.user.tag,
-                        displayName: m.displayName,
-                        roleName: role.name
-                    });
-                }
-            }
-        }
+    const guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) {
+        return interaction.reply({
+            content: '❌ Servidor não encontrado!',
+            flags: MessageFlags.Ephemeral
+        });
     }
     
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    
+    // Buscar membros staff com tratamento de rate limit
+    const staffMembers = await fetchStaffMembers(guild);
+    
     if (staffMembers.length === 0) {
-        return interaction.reply({
-            content: '❌ Nenhum membro da staff disponível para avaliação no momento!',
-            flags: MessageFlags.Ephemeral
+        return interaction.editReply({
+            content: '❌ Nenhum membro da staff disponível para avaliação no momento!\n\nVerifique se:\n1. Os IDs dos cargos estão corretos\n2. Os cargos têm membros\n3. O bot tem permissão para ver os membros'
         });
     }
     
@@ -780,15 +852,14 @@ client.on('interactionCreate', async interaction => {
     
     const selectMenu = new StringSelectMenuBuilder()
         .setCustomId('select_staff_to_review')
-        .setPlaceholder('👤 Selecione o membro da staff para avaliar')
+        .setPlaceholder(`👤 Selecione um dos ${staffMembers.length} membros da staff`)
         .addOptions(options);
     
     const row = new ActionRowBuilder().addComponents(selectMenu);
     
-    await interaction.reply({
-        content: '**📋 Selecione o membro da staff que deseja avaliar:**',
-        components: [row],
-        flags: MessageFlags.Ephemeral
+    await interaction.editReply({
+        content: `**📋 Selecione o membro da staff que deseja avaliar:**\n\nTotal de membros disponíveis: ${staffMembers.length}`,
+        components: [row]
     });
 });
 
@@ -801,7 +872,14 @@ client.on('interactionCreate', async interaction => {
     if (interaction.customId !== 'select_staff_to_review') return;
     
     const selectedUserId = interaction.values[0];
-    const guild = interaction.guild;
+    const guild = client.guilds.cache.get(GUILD_ID);
+    
+    if (!guild) {
+        return interaction.update({
+            content: '❌ Servidor não encontrado!',
+            components: [],
+        });
+    }
     
     await guild.members.fetch();
     const targetMember = await guild.members.fetch(selectedUserId).catch(() => null);
@@ -900,9 +978,15 @@ client.on('interactionCreate', async interaction => {
         });
     }
     
-    const guild = interaction.guild;
-    await guild.members.fetch();
+    const guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) {
+        return interaction.reply({
+            content: '❌ Servidor não encontrado!',
+            flags: MessageFlags.Ephemeral
+        });
+    }
     
+    await guild.members.fetch();
     const reviewer = interaction.user;
     const reviewed = await guild.members.fetch(targetId).catch(() => null);
     
@@ -988,7 +1072,7 @@ client.on('interactionCreate', async interaction => {
 });
 
 // ============================================
-// HANDLER: MENSAGENS DE TEXTO (PREFIXO !)
+// HANDLER: MENSAGENS DE TEXTO
 // ============================================
 
 client.on('messageCreate', async message => {
@@ -998,29 +1082,24 @@ client.on('messageCreate', async message => {
     const args = message.content.slice(PREFIX.length).trim().split(/ +/);
     const command = args.shift().toLowerCase();
     
-    // Comando !help
     if (command === 'help') {
         const embed = new EmbedBuilder()
             .setTitle('📚 Comandos Disponíveis')
             .setColor(EMBED_COLOR)
             .addFields(
                 { name: '🔹 Comandos Slash', value: '`/clearall` - Limpar canal (Staff)\n`/clear` - Limpar usuário (Staff)\n`/stats` - Ver estatísticas\n`/ranking` - Ranking semanal\n`/botinfo` - Informações do bot', inline: false },
-                { name: '🔸 Comandos de Texto', value: '`!help` - Esta mensagem\n`!ping` - Verificar latência\n`!info` - Informações do bot\n`!top` - Ranking geral\n`!stats @user` - Estatísticas de um usuário', inline: false },
-                { name: '⭐ Sistema de Notas', value: '🔴 0-3: Insatisfatório\n🟡 4-6: Regular\n🟢 7-10: Excelente', inline: false }
+                { name: '🔸 Comandos de Texto', value: '`!help` - Esta mensagem\n`!ping` - Verificar latência\n`!info` - Informações do bot\n`!top` - Ranking geral\n`!stats @user` - Estatísticas de um usuário', inline: false }
             )
             .setTimestamp();
-        
         await message.reply({ embeds: [embed] });
     }
     
-    // Comando !ping
     else if (command === 'ping') {
         const sent = await message.reply('🏓 Calculando ping...');
         const latency = sent.createdTimestamp - message.createdTimestamp;
         await sent.edit(`🏓 Pong! Latência: ${latency}ms | API: ${Math.round(client.ws.ping)}ms`);
     }
     
-    // Comando !info
     else if (command === 'info') {
         const reviews = loadReviews();
         const stats = loadStats();
@@ -1036,11 +1115,9 @@ client.on('messageCreate', async message => {
                 { name: '⏰ Sistema', value: `⏱️ Uptime: ${Math.floor(uptime / 86400)}d ${Math.floor((uptime % 86400) / 3600)}h ${Math.floor((uptime % 3600) / 60)}m\n💾 Memória: ${(memory.heapUsed / 1024 / 1024).toFixed(2)} MB`, inline: true }
             )
             .setTimestamp();
-        
         await message.reply({ embeds: [embed] });
     }
     
-    // Comando !top
     else if (command === 'top') {
         const reviews = loadReviews();
         const userScores = new Map();
@@ -1092,7 +1169,6 @@ client.on('messageCreate', async message => {
         await message.reply({ embeds: [embed] });
     }
     
-    // Comando !stats
     else if (command === 'stats') {
         const target = message.mentions.users.first() || message.author;
         const stats = calculateUserStats(target.id);
@@ -1161,22 +1237,19 @@ process.on('uncaughtException', (error) => {
 // INICIALIZAÇÃO
 // ============================================
 
-console.log('='.repeat(50));
-console.log('🚀 INICIANDO BOT DE AVALIAÇÃO v4.0');
-console.log('='.repeat(50));
+console.log('='.repeat(60));
+console.log('🚀 INICIANDO BOT DE AVALIAÇÃO v5.0');
+console.log('='.repeat(60));
+console.log(`🎯 GUILD_ID: ${GUILD_ID}`);
 console.log(`🔧 Cargos Staff: ${STAFF_ROLE_IDS.length > 0 ? STAFF_ROLE_IDS.join(', ') : 'NENHUM CONFIGURADO'}`);
 console.log(`📺 REVIEWS_CHANNEL_ID: ${REVIEWS_CHANNEL_ID || 'NÃO CONFIGURADO'}`);
 console.log(`📝 REVIEWS_LOG_CHANNEL_ID: ${REVIEWS_LOG_CHANNEL_ID || 'NÃO CONFIGURADO'}`);
 console.log(`📊 LOG_CHANNEL_ID: ${LOG_CHANNEL_ID || 'NÃO CONFIGURADO'}`);
-console.log('='.repeat(50));
+console.log('='.repeat(60));
 
 client.login(TOKEN).catch(error => {
     console.error('❌ Erro ao fazer login:', error);
     process.exit(1);
 });
-
-// ============================================
-// EXPORTS
-// ============================================
 
 module.exports = { client, isStaff, canReview, getColorByScore, getScoreEmoji, createBackup };
