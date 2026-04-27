@@ -174,4 +174,8 @@ sequenceDiagram
 
 🟢 Online • ⚡ Estável • 🔒 Seguro
 
-𝙼𝚊𝚍𝚎 𝙱𝚢 𝚈𝟸𝚔_𝙽𝚊𝚝
+---
+
+<p align="center">
+  <b>© 2026 HostVille Moderação Bot • 𝙼𝚊𝚍𝚎 𝙱𝚢 𝚈𝟸𝚔_𝙽𝚊𝚝</b>
+</p>
