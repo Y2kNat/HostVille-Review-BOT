@@ -1,5 +1,5 @@
 {
-  "name": "discord-avaliacao-bot",
+  "name": "HostVille Review BOT",
   "version": "1.0.0",
   "description": "Bot de avaliação de equipe para Discord com sistema completo de ranking, logs e moderação",
   "main": "index.js",
